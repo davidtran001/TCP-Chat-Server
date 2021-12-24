@@ -3,6 +3,7 @@
 #define BACKLOG_SIZE 32
 
 // function protypes
+void initializeClientInfo();
 void serialize_server_message(char* buf);
 void deserialize_message(char* buf);
 bool authUserLogin(int sockfd);
@@ -12,9 +13,11 @@ void sendServerMessage(int type, int sockfd);
 void processCommand(char* buf, int sockfd, int clientIndex);
 void sendClientMessage(int clientIndex, char* message);
 void fixCommands(int clientIndex);
+void createAccount(int sockfd);
+void inviteResponse(int clientIndex);
 
 // session prototypes
-void joinSession(int clientIndex, char* sessionID);
+void joinSession(int clientIndex, char* sessionID, bool isInvite);
 void leaveSession(int clientIndex);
 void createSession(int clientIndex, char* sessionID);
 int doesSessionExist(char* sessionID);
@@ -29,14 +32,14 @@ fd_set master;
 //array that keeps track of all clients
 //note: login information is included in logininfo.txt in Lab4 folder
 struct client clientList[MAX_USERS] = {
-    {.id = "client1", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client2", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client3", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client4", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client5", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client6", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client7", .isActive = false, .sockfd = -1, .currentSession = -1},
-    {.id = "client8", .isActive = false, .sockfd = -1, .currentSession = -1}
+    {.id = "client1", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client2", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client3", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client4", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client5", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client6", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client7", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false},
+    {.id = "client8", .isActive = false, .sockfd = -1, .currentSession = -1, .isRegistered = false}
 };
 
 int main(int argc, char** argv) {
@@ -45,6 +48,8 @@ int main(int argc, char** argv) {
         printf("Bad arguments\n");
         exit(1);
     }
+
+    initializeClientInfo();
 
     //fd_set master;
     fd_set read_fds;
@@ -107,10 +112,9 @@ int main(int argc, char** argv) {
         printf("Error listening for request\n");
         exit(1);
     }
-    
-    
-    while(true) {
-        read_fds = master; 
+
+    while (true) {
+        read_fds = master;
 
         if (select(fd_max + 1, &read_fds, NULL, NULL, NULL) < 0) {
             perror("select");
@@ -128,7 +132,7 @@ int main(int argc, char** argv) {
                         perror("accept");
                         continue;
                     }
-                    
+
                     if (authUserLogin(newfd)) {
                         FD_SET(newfd, &master); // add to master set
                         if (newfd > fd_max) { // keep track of the max
@@ -145,21 +149,19 @@ int main(int argc, char** argv) {
                             if ((recv_sz = recv(clientList[j].sockfd, buf, BUF_SIZE, 0)) == -1) {
                                 printf("Error receiving message\n");
                                 continue;
-                            } else if (recv_sz != 0)  {
+                            } else if (recv_sz != 0) {
                                 //process the command from the client 
                                 processCommand(buf, clientList[j].sockfd, j);
                             }
 
                         }
                     }
-                    
+
                 } // END handle data from client
             } // END got new incoming connection
         } // END looping through file descriptors
     }
 }
-
-//luiz.navarro@mail.utoronto.ca
 
 void serialize_server_message(char* buf) {
     printf("sent %u:%u:%s:\n", response.type, response.size, response.source);
@@ -173,7 +175,7 @@ void deserialize_message(char* buf) {
     int buf_index = 0;
     char out[BUF_SIZE];
     int out_index = 0;
-    
+
     // extract type from buf into out and then into m
     while (buf[buf_index] != ':') {
         out[out_index] = buf[buf_index];
@@ -181,10 +183,10 @@ void deserialize_message(char* buf) {
         ++buf_index;
     }
     m.type = atoi(out);
-    memset(out, 0, sizeof(out));
+    memset(out, 0, sizeof (out));
     out_index = 0;
     ++buf_index;
-    
+
     // extract size from buf into out and then into m
     while (buf[buf_index] != ':') {
         out[out_index] = buf[buf_index];
@@ -192,10 +194,10 @@ void deserialize_message(char* buf) {
         ++buf_index;
     }
     m.size = atoi(out);
-    memset(out, 0, sizeof(out));
+    memset(out, 0, sizeof (out));
     out_index = 0;
     ++buf_index;
-    
+
     // extract source from buf into out and then into m
     while (buf[buf_index] != ':') {
         out[out_index] = buf[buf_index];
@@ -206,41 +208,42 @@ void deserialize_message(char* buf) {
     strcpy(m.source, out);
     out_index = 0;
     ++buf_index;
-    
-    
+
+
     // extract data from buf into out and then into m
     while (out_index < m.size) {
         m.data[out_index] = buf[buf_index];
         ++out_index;
         ++buf_index;
     }
-    
+
     printf("received %u:%u:%s\n", m.type, m.size, m.source);
 }
 
 // authenticate user login information
 bool authUserLogin(int sockfd) {
     char buf[BUF_SIZE];
-    if (recv(sockfd, buf, BUF_SIZE, 0) == -1) {
-        printf("Error receiving message\n");
-    }
     FILE *authPtr;
     char str[MAX_DATA];
     char temp[MAX_DATA];
     
-    deserialize_message(buf);
-    snprintf(str, MAX_DATA, "%s/%s", m.source, m.data);        
-    if ((authPtr = fopen("logininfo.txt", "r")) == NULL) {
-	printf("Error opening file.");
-	exit(1);
+    if (recv(sockfd, buf, BUF_SIZE, 0) == -1) {
+        printf("Error receiving message\n");
     }
+
+    deserialize_message(buf);
     
-    // check if user is already active
+    // Check is client wishes to create new account
+    if (m.type == REGISTER) {
+        createAccount(sockfd);
+        return false;
+    }
+
+    // check if user is already active or not registered
     int i;
-    for (i = 0; i < MAX_USERS; i++) { 
+    for (i = 0; i < MAX_USERS; i++) {
         if (strcmp(clientList[i].id, m.source) == 0) {
             if (clientList[i].isActive) { // if user is already active, return false to deny the login request
-                fclose(authPtr);
                 sendServerMessage(LO_NAK, sockfd);
                 return false;
             } else if (!clientList[i].isActive) {
@@ -248,29 +251,36 @@ bool authUserLogin(int sockfd) {
             }
         }
     }
-
     
+    snprintf(str, MAX_DATA, "%s/%s", m.source, m.data);
+    
+    // open logininfo.txt in read mode
+    if ((authPtr = fopen("logininfo.txt", "r")) == NULL) {
+        printf("Error opening file.");
+        exit(1);
+    }
+
     // check if user's password is correct by checking checking logininfo.txt in Lab4 folder
     while (fgets(temp, 512, authPtr) != NULL) {
-	if ((strstr(temp, str)) != NULL) {
-
+        if ((strstr(temp, str)) != NULL) {
+            printf("client %s is logging in\n", clientList[i].id);
             // edit clientList members
             clientList[i].isActive = true;
             clientList[i].sockfd = sockfd;
             sendServerMessage(LO_ACK, sockfd);
             fclose(authPtr);
             return true;
-	}
+        }
     }
     sendServerMessage(LO_NAK, sockfd);
     return false;
-    
+
 }
 
 // Send ACK or NAK to client
 void sendServerMessage(int type, int sockfd) {
     char buf[BUF_SIZE];
-    
+
     if (type == LO_ACK) {
         response.type = LO_ACK;
         strcpy(response.source, "server");
@@ -300,7 +310,7 @@ void sendServerMessage(int type, int sockfd) {
         response.type = QU_ACK;
         strcpy(response.source, "server");
         char temp[MAX_NAME] = "List of active users:\n";
-        
+
         //loop through all users and check if they are active
         //if user is active then add them to the message that list all active users
         for (int i = 0; i < MAX_USERS; i++) {
@@ -309,34 +319,55 @@ void sendServerMessage(int type, int sockfd) {
                 strcat(temp, "\n");
             }
         }
-        
+
         strcat(temp, "List of active sessions:");
-        
+
         for (int i = 0; i < MAX_SESSIONS; i++) {
             if (sessionList[i].numUsers != 0) {
                 strcat(temp, "\n");
                 strcat(temp, sessionList[i].sessionID);
             }
         }
-        
+
         strcpy(response.data, temp);
-        response.size = strlen(response.data)+1;
+        response.size = strlen(response.data) + 1;
+
+    } else if (type == INV_ACK) {
+        response.type = INV_ACK;
+        strcpy(response.source, "server");
+        strcpy(response.data, "");
+        response.size = strlen(response.data);
+    } else if (type == INV_NAK) {
+        response.type = INV_NAK;
+        strcpy(response.source, "server");
+        strcpy(response.data, "");
+        response.size = strlen(response.data);
+    } else if (type == REG_ACK) {
+        response.type = REG_ACK;
+        strcpy(response.source, "server");
+        strcpy(response.data, "");
+        response.size = strlen(response.data);
+    } else if (type == REG_NAK) {
+        response.type = REG_NAK;
+        strcpy(response.source, "server");
+        strcpy(response.data, "");
+        response.size = strlen(response.data);
     }
     serialize_server_message(buf);
     //send message to client
-    if (send(sockfd, buf, BUF_SIZE,  0) == -1) {
+    if (send(sockfd, buf, BUF_SIZE, 0) == -1) {
         perror("send");
     }
-    
+
 }
 
 void logOutUser(int sockfd, int clientIndex) {
     printf("%s has logged out\n", clientList[clientIndex].id);
     leaveSession(clientIndex); //should leave any sessions that user is connected to first
-    
+
     FD_CLR(sockfd, &master); // remove from master set 
     close(sockfd); // close connection to socket
-    
+
     //change client members back to default values
     clientList[clientIndex].isActive = false;
     clientList[clientIndex].sockfd = -1;
@@ -346,17 +377,19 @@ void logOutUser(int sockfd, int clientIndex) {
 // create new session
 // REFER TO session STRUCT IN utils.h
 void createSession(int clientIndex, char* sessionID) {
-    printf("%s is creating session named %s\n", clientList[clientIndex].id, sessionID);
+    
+    // check if session with sessionID already exist
     if (doesSessionExist(sessionID) != -1) {
         sendServerMessage(JN_NAK, clientList[clientIndex].sockfd);
         printf("cannot create session because it already exist!");
         return;
-    }  
-    
+    }
+
+    // loop through all sessions
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        //printf("i: %d\n", i);
-        if (strcmp(sessionList[i].sessionID, "") == 0) {
-            printf("found empty session: %d\n", i);
+        // find empty session and create new session
+        if (sessionList[i].numUsers == 0) {
+            printf("%s is creating session named %s\n", clientList[clientIndex].id, sessionID);
             // Add session to sessionList and add client to it
             strcpy(sessionList[i].sessionID, sessionID);
             sessionList[i].clientsInSession[0] = &clientList[clientIndex];
@@ -370,32 +403,37 @@ void createSession(int clientIndex, char* sessionID) {
 
 // add client to requested session
 // REFER TO session STRUCT IN utils.h
-void joinSession(int clientIndex, char* sessionID) {
+void joinSession(int clientIndex, char* sessionID, bool isInvite) {
     int sessionIndex = doesSessionExist(sessionID);
     
-    if (clientList[clientIndex].currentSession != -1) { //client is already in session
+    //check if client is already in session
+    if (clientList[clientIndex].currentSession != -1) {
         sendServerMessage(JN_NAK, clientList[clientIndex].sockfd);
         return;
     }
+    
+    // if sessionIndex is not equal -1, then the specified session exist
     if (sessionIndex != -1) {
+        // loop through each user in session
         for (int j = 0; j < MAX_USERS; j++) {
+            // find empty slot in session and add client to session
             if (sessionList[sessionIndex].clientsInSession[j] == NULL) {
-                //each element insession array will point to an client in the client array
-                sessionList[sessionIndex].clientsInSession[j] = &clientList[clientIndex]; 
+                //each element in session array will point to an client in the client array
+                sessionList[sessionIndex].clientsInSession[j] = &clientList[clientIndex];
                 ++sessionList[sessionIndex].numUsers;
                 clientList[clientIndex].currentSession = sessionIndex;
-                sendServerMessage(JN_ACK, clientList[clientIndex].sockfd);
+                if (!isInvite) sendServerMessage(JN_ACK, clientList[clientIndex].sockfd); 
                 printf("%s is joining session %s\n", clientList[clientIndex].id, sessionID);
                 return;
             }
         }
-
+        
     } else if (sessionIndex == -1) {
-        sendServerMessage(JN_NAK, clientList[clientIndex].sockfd);
+        if (!isInvite) sendServerMessage(JN_NAK, clientList[clientIndex].sockfd);
         return; //SESSION NOT FOUND
     }
-    
-        
+
+
 }
 
 // leave A session that the client is in
@@ -404,30 +442,31 @@ void leaveSession(int clientIndex) {
     int size;
     char* sessionID = sessionList[clientList[clientIndex].currentSession].sessionID;
     int sessionIndex = doesSessionExist(sessionID);
+    
+    // session exists
     if (sessionIndex != -1) {
+        // loop through all users in session
         for (int j = 0; j < MAX_USERS; j++) {
-            if (sessionList[sessionIndex].clientsInSession[j] != NULL && strcmp(sessionList[sessionIndex].clientsInSession[j]->id, clientList[clientIndex].id) == 0) {
-                printf("leaving session...\n");
+            if (sessionList[sessionIndex].clientsInSession[j] != NULL && sessionIndex == clientList[clientIndex].currentSession) {
+                printf("%s is leaving session...\n");
                 sessionList[sessionIndex].clientsInSession[j] = NULL;
                 --sessionList[sessionIndex].numUsers;
                 clientList[clientIndex].currentSession = -1;
                 printf("numUsers: %d\n", sessionList[sessionIndex].numUsers);
                 if (sessionList[sessionIndex].numUsers <= 0) {
-                    printf("sessionID before: %s\n", sessionList[sessionIndex].sessionID);
                     strcpy(sessionList[sessionIndex].sessionID, "");
-                    printf("sessionID: %s\n", sessionList[sessionIndex].sessionID);
                 }
                 return;
             }
         }
 
 
-    } else { //session not found
+    } else { //SESSION NOT FOUND
         printf("Cannot leave session that does not exist!\n");
         return;
-        
+
     }
-        
+
 }
 
 //check if session with sessionID already exist, if so return the sessionList index of that session
@@ -441,7 +480,7 @@ int doesSessionExist(char* sessionID) {
     }
     // NOT FOUND
     return -1;
-  
+
 }
 
 // sends message from client to all of the clients in the same session
@@ -449,28 +488,27 @@ void sendClientMessage(int clientIndex, char* message) {
     int temp_sockfd;
     char buf[BUF_SIZE];
     response.type = MESSAGE;
-    
+
     // prepare message data
     int message_size = sizeof m.data;
     memcpy(response.data, m.data, message_size);
     response.size = m.size;
     strcpy(response.source, "server");
     serialize_server_message(buf);
-    
+
     char sessionID[MAX_SESSION_ID];
     int sessionListIndex = doesSessionExist(sessionList[clientList[clientIndex].currentSession].sessionID); // check if session exist and if it does then save it's sessionIndex
     strcpy(sessionID, sessionList[sessionListIndex].sessionID); // save the sessionID from the user that sent the message
-    
+
     if (sessionListIndex != -1) {
         for (int j = 0; j < MAX_USERS; j++) { // loop through each user in the session and send them the message.
             // do not send if the client ID matches the user that originally sent the message 
             if (clientList[j].currentSession == sessionListIndex) {
                 temp_sockfd = clientList[j].sockfd;
                 if (strcmp(clientList[j].id, clientList[clientIndex].id) != 0) {
-                    if (send(temp_sockfd, buf, BUF_SIZE, 0) == -1) 
+                    if (send(temp_sockfd, buf, BUF_SIZE, 0) == -1)
                         printf("Error sending client message");
-                } else printf("Sent to %s, sockfd: %d\n", clientList[j].id, temp_sockfd);
-
+                } 
             }
 
         }
@@ -480,21 +518,112 @@ void sendClientMessage(int clientIndex, char* message) {
     }
 }
 
+// send client list of active clients and sessions
 void listUsers(int clientIndex) {
     sendServerMessage(QU_ACK, clientList[clientIndex].sockfd);
 }
 
-
-
-void processCommand(char* buf, int sockfd, int clientIndex) { 
-    deserialize_message(buf);
-    if (m.type > 12) m.type = m.type/10;
-    printf("processing command: %d\n", m.type);
+// register new client
+void createAccount(int sockfd) {
+    int num;
+    FILE *fptr;
+    char str[MAX_DATA];
+    char temp[MAX_DATA];
+    int i = 0;
     
+    // find open slot for client that is not registered yet
+    while (i < MAX_USERS) {
+        if (!clientList[i].isRegistered) break;
+        i++;
+    }
+    
+    if (i == MAX_USERS) {
+        printf("maximum account capacity! Account could not be made.\n");
+        sendServerMessage(REG_NAK, sockfd);
+        return;
+    }
+
+    if ((fptr = fopen("logininfo.txt", "a+")) == NULL) {
+        printf("Error opening file.");
+        exit(1);
+    }
+    sendServerMessage(REG_ACK, sockfd);
+    strcpy(clientList[i].id, m.source); // add new client id to clientList
+    clientList[i].isRegistered = true; // new client is now registered
+    fprintf(fptr, "\n%s/%s", m.source, m.data); // add client username and password to logininfo.txt
+    fclose(fptr);
+}
+
+// intialize clientList, adds reegistered user from previous sessions to clientList
+void initializeClientInfo() {
+    FILE* fptr;
+    char str[MAX_DATA];
+    char temp[MAX_DATA];
+    int i = 0;
+    char* token;
+    const char delim[2] = "/";
+
+    if ((fptr = fopen("logininfo.txt", "r")) == NULL) {
+        printf("Error opening file.");
+        exit(1);
+    }
+            
+    // loop through each line in logininfo.txt
+    while (fgets(temp, 512, fptr) != NULL) {
+        // edit clientList members
+        token = strtok(temp, delim);
+        strcpy(clientList[i].id, temp);
+        clientList[i].isRegistered = true;
+        i++;
+    }
+    fclose(fptr);
+    return;
+}
+
+// sends session invitation to client
+void invite(int clientIndex) {
+    int sessionIndex = clientList[clientIndex].currentSession;
+    char buf[BUF_SIZE];
+
+    // prepare the response message
+    strcpy(response.data, sessionList[sessionIndex].sessionID);
+    response.size = strlen(response.data) + 1;
+    response.type = INVITE;
+    strcpy(response.source, m.source);
+    serialize_server_message(buf);
+
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (strcmp(m.data, clientList[i].id) == 0) { // if the specified recipient of the message has been found
+            if (send(clientList[i].sockfd, buf, BUF_SIZE, 0) == -1) {
+                perror("send");
+            }
+            sendServerMessage(INV_ACK, clientList[clientIndex].sockfd);
+            return;
+        }
+    }
+    sendServerMessage(INV_NAK, clientList[clientIndex].sockfd);
+}
+
+// process response to invite
+void inviteResponse(int clientIndex) {
+    char buf[BUF_SIZE];
+
+    if (m.type == INV_ACK) { // response is yes
+        leaveSession(clientIndex);
+        joinSession(clientIndex, m.data, true);
+        return;
+    } else if (m.type == INV_NAK) return; // response is no
+}
+
+void processCommand(char* buf, int sockfd, int clientIndex) {
+    deserialize_message(buf);
+    if (m.type > 18) m.type = m.type / 10;
+    printf("processing command: %d\n", m.type);
+
     if (m.type == EXIT) {
         logOutUser(sockfd, clientIndex);
     } else if (m.type == JOIN) {
-        joinSession(clientIndex, m.data);
+        joinSession(clientIndex, m.data, false);
     } else if (m.type == LEAVE_SESS) {
         leaveSession(clientIndex);
     } else if (m.type == NEW_SESS) {
@@ -503,9 +632,11 @@ void processCommand(char* buf, int sockfd, int clientIndex) {
         listUsers(clientIndex);
     } else if (m.type == MESSAGE) {
         sendClientMessage(clientIndex, m.data);
-    }
-    else
+    } else if (m.type == INVITE) {
+        invite(clientIndex);
+    } else if (m.type == INV_ACK || m.type == INV_NAK) {
+        inviteResponse(clientIndex);
+    } else
         sendServerMessage(m.type, sockfd);
-    
+
 }
-    

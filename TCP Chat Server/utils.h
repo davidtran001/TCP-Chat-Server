@@ -41,6 +41,7 @@ struct client {
     bool isActive;
     int sockfd;
     int currentSession;
+	bool isRegistered;
 };
 
 struct session {
@@ -64,6 +65,12 @@ struct session {
 #define MESSAGE 10
 #define QUERY 11
 #define QU_ACK 12
+#define INVITE 13
+#define INV_ACK 14
+#define INV_NAK 15
+#define REGISTER 16
+#define REG_ACK 17
+#define REG_NAK 18
 
 #ifdef __cplusplus
 }

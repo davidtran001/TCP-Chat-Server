@@ -96,7 +96,6 @@ bool send_and_receive(int sockfd, int ack, int nak) {
 bool login(int* sockfd, char** inputs, fd_set* master) {
     // creates the login message and gets the specified server
     strcpy(clientID, inputs[1]);
-    strcpy(m.source, clientID);
     strcpy(m.data, inputs[2]);
     m.type = LOGIN;
     m.size = strlen(m.data) + 1;
@@ -131,7 +130,7 @@ bool login(int* sockfd, char** inputs, fd_set* master) {
 }
 
 // logs the current user out
-void logout(int* sockfd, fd_set* master) {
+bool logout(int* sockfd, fd_set* master) {
     strcpy(m.source, clientID);
     m.type = EXIT;
     m.size = 0;
@@ -149,20 +148,61 @@ void logout(int* sockfd, fd_set* master) {
     FD_CLR(*sockfd, master);
     close(*sockfd); // close connection to socket
     *sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    return false;
+}
+
+void register_user(int *sockfd, char** inputs, fd_set* master) {
+    // creates the login message and gets the specified server
+    strcpy(clientID, inputs[1]);
+    strcpy(m.data, inputs[2]);
+    m.type = REGISTER;
+    m.size = strlen(m.data) + 1;
+    
+    // address of server
+    struct sockaddr_in serv_addr;
+    socklen_t addrlen_in = sizeof(struct sockaddr_in);
+    
+    // sets the serv_addr to the specified server
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(atoi(inputs[4]));
+    inet_aton(inputs[3], &serv_addr.sin_addr);
+
+    // connects to the specified server
+    if (connect(*sockfd, (struct sockaddr*) &serv_addr, addrlen_in) == -1) {
+        perror("Error connecting\n");
+        exit(1);
+    }
+    
+    send_and_receive(*sockfd, REG_ACK, REG_NAK);
+    
+    // removes the socket to master fd_set
+    FD_CLR(*sockfd, master);
+    close(*sockfd); // close connection to socket
+    *sockfd = socket(AF_INET, SOCK_STREAM, 0);
 }
 
 // joins the current user to the specified session
-void join_session(int sockfd, char** inputs) {
+bool join_session(int sockfd, char* name) {
     // creates the join message
-    strcpy(m.data, inputs[1]);
+    strcpy(m.data, name);
     m.type = JOIN;
     m.size = strlen(m.data) + 1;
 
-    send_and_receive(sockfd, JN_ACK, JN_NAK);
+    return send_and_receive(sockfd, JN_ACK, JN_NAK);
+}
+
+// invites a specified user to the current session
+void invite(int sockfd, char* name) {
+    // creates the invite message
+    strcpy(m.data, name);
+    m.type = INVITE;
+    m.size = strlen(m.data) + 1;
+    
+    send_and_receive(sockfd, INV_ACK, INV_NAK);
 }
 
 // removes the current user from their current session
-void leave_session(int sockfd) {
+bool leave_session(int sockfd) {
     m.type = LEAVE_SESS;
     m.size = 0;
             
@@ -176,16 +216,19 @@ void leave_session(int sockfd) {
         perror("Error sending leave message\n");
         exit(1);
     }  
+    
+    return false;
 }
 
 // creates a session for the current user
-void create_session(int sockfd, char** inputs) {
+bool create_session(int sockfd, char* name) {
     //creates the create session message
-    strcpy(m.data, inputs[1]);
+    strcpy(m.data, name);
     m.type = NEW_SESS;
     m.size = strlen(m.data) + 1;
 
     send_and_receive(sockfd, NS_ACK, NS_ACK);
+    return true;
 }
 
 // lists all of the sessions
@@ -262,6 +305,7 @@ void send_message(int sockfd, char* data) {
 
 int main(int argc, char** argv) {
     bool logged_in = false;
+    bool in_session = false;
     
     //gets socket fd
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -312,31 +356,50 @@ int main(int argc, char** argv) {
             }
             else if (strcmp(inputs[0], "logout") == 0) {
                 // checks if a user is currently logged in
-                if (logged_in) {
-                    logout(&sockfd, &master);
-                    logged_in = false;
-                }
+                if (logged_in)
+                    logged_in = logout(&sockfd, &master);
                 else
                     printf("Not logged in!\n");
+            }
+            else if (strcmp(inputs[0], "register") == 0) {
+                register_user(&sockfd, inputs, &master);
             }
             else if (strcmp(inputs[0], "joinsession") == 0) {
                 // checks if a user is currently logged in
                 if (logged_in)
-                    join_session(sockfd, inputs);
+                    if (!in_session)
+                        in_session = join_session(sockfd, inputs[1]);
+                    else
+                        printf("Already in a session!\n");
+                else
+                    printf("Not logged in!\n");
+            }
+            else if (strcmp(inputs[0], "invite") == 0) {
+                if (logged_in)
+                    if (in_session)
+                        invite(sockfd, inputs[1]);
+                    else
+                        printf("Not in a session!\n");
                 else
                     printf("Not logged in!\n");
             }
             else if (strcmp(inputs[0], "leavesession") == 0) {
                 // checks if a user is currently logged in
                 if (logged_in)
-                    leave_session(sockfd);
+                    if (in_session)
+                        in_session = leave_session(sockfd);
+                    else
+                        printf("Not in a session!\n");
                 else
                     printf("Not logged in!\n");
             }
             else if (strcmp(inputs[0], "createsession") == 0) {
                 // checks if a user is currently logged in
                 if (logged_in)
-                    create_session(sockfd, inputs);
+                    if (!in_session)
+                        in_session = create_session(sockfd, inputs[1]);
+                    else
+                        printf("Already in a session!\n");
                 else
                     printf("Not logged in!\n");
             }
@@ -355,7 +418,10 @@ int main(int argc, char** argv) {
             else {
                 // checks if a user is currently logged in
                 if (logged_in)
-                    send_message(sockfd, temp);
+                    if (in_session)
+                        send_message(sockfd, temp);
+                    else
+                        printf("Not in a session!\n");
                 else
                     printf("Not logged in!\n");
             }
@@ -381,6 +447,49 @@ int main(int argc, char** argv) {
                         memcpy(&(buf[DATA_LENGTH*i]), &(m.data[2]), m.size);
 
                     printf("%s\n", buf);
+                }
+                else if(m.type == INVITE) {
+                    printf("You have been invited to %s. Do you want to join? (y/n) ", m.data);
+                    
+                    while (true) {
+                        char answer[1];
+                        scanf("%s", answer);
+                        while (getchar() != '\n');
+                        
+                        if (strcmp(answer, "y") == 0) {
+                            strcpy(m.source, clientID);
+                            m.type = INV_ACK;
+                            
+                            char buf[BUF_SIZE];
+                            serialize_message(buf);
+
+                            // sends message to the server
+                            if (send(sockfd, buf, BUF_SIZE, 0) == -1) {
+                                perror("Error sending logout message\n");
+                                exit(1);
+                            }  
+                            
+                            in_session = true;
+                            break;
+                        }
+                        else if (strcmp(answer, "n") == 0) {
+                            strcpy(m.source, clientID);
+                            m.type = INV_NAK;
+                            
+                            char buf[BUF_SIZE];
+                            serialize_message(buf);
+
+                            // sends message to the server
+                            if (send(sockfd, buf, BUF_SIZE, 0) == -1) {
+                                perror("Error sending logout message\n");
+                                exit(1);
+                            }  
+                            
+                            break;
+                        }
+                        else
+                            printf("Please enter \"y\" or \"n\" ");
+                    }
                 }
                 else
                     perror("Received unexpected message type!\n");
